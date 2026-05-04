@@ -1,16 +1,35 @@
 import os
-import time
 import tempfile
 import math
 import json
 import traceback
+import logging
 
 import cv2
 import numpy as np
 import mediapipe as mp
 from flask import Flask, request, jsonify
 
+# ---------------------------------------------------------------------------
+# Logging — works with both Flask dev server and gunicorn
+# ---------------------------------------------------------------------------
+
+gunicorn_logger = logging.getLogger("gunicorn.error")
+
 app = Flask(__name__)
+
+if gunicorn_logger.handlers:
+    app.logger.handlers = gunicorn_logger.handlers
+    app.logger.setLevel(gunicorn_logger.level)
+else:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+    )
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
 
 mp_pose = mp.solutions.pose
 
@@ -61,7 +80,7 @@ def estimate_rim_entry_angle(ball_trajectory: list) -> float | None:
     """
     Estimate the angle (degrees from horizontal) at which the ball enters the rim
     based on the final segment of the trajectory.
-    Negative = descending (good for a shot).
+    Positive angle = upward; descending shots typically show 30-60°.
     """
     if len(ball_trajectory) < 4:
         return None
@@ -101,23 +120,18 @@ def classify_shot_phase(landmarks, frame_h: int, frame_w: int) -> str:
     Classify the current pose into a shot phase using wrist/shoulder/hip positions.
     Phases: idle, dip, load, release
     """
-    r_wrist_y = get_landmark_y(landmarks, mp_pose.PoseLandmark.RIGHT_WRIST.value, frame_h)
-    r_elbow_y = get_landmark_y(landmarks, mp_pose.PoseLandmark.RIGHT_ELBOW.value, frame_h)
+    r_wrist_y   = get_landmark_y(landmarks, mp_pose.PoseLandmark.RIGHT_WRIST.value,    frame_h)
+    r_elbow_y   = get_landmark_y(landmarks, mp_pose.PoseLandmark.RIGHT_ELBOW.value,    frame_h)
     r_shoulder_y = get_landmark_y(landmarks, mp_pose.PoseLandmark.RIGHT_SHOULDER.value, frame_h)
-    r_hip_y = get_landmark_y(landmarks, mp_pose.PoseLandmark.RIGHT_HIP.value, frame_h)
+    r_hip_y     = get_landmark_y(landmarks, mp_pose.PoseLandmark.RIGHT_HIP.value,      frame_h)
+    l_wrist_y   = get_landmark_y(landmarks, mp_pose.PoseLandmark.LEFT_WRIST.value,     frame_h)
 
-    l_wrist_y = get_landmark_y(landmarks, mp_pose.PoseLandmark.LEFT_WRIST.value, frame_h)
-    l_shoulder_y = get_landmark_y(landmarks, mp_pose.PoseLandmark.LEFT_SHOULDER.value, frame_h)
-
-    avg_wrist_y = (r_wrist_y + l_wrist_y) / 2
-    avg_shoulder_y = (r_shoulder_y + l_shoulder_y) / 2
-
-    torso_height = abs(avg_shoulder_y - r_hip_y)
+    torso_height = abs(r_shoulder_y - r_hip_y)
     if torso_height == 0:
         return "idle"
 
-    wrist_below_hip = r_wrist_y > r_hip_y
-    wrist_near_shoulder = abs(r_wrist_y - r_shoulder_y) < torso_height * 0.4
+    wrist_below_hip      = r_wrist_y > r_hip_y
+    wrist_near_shoulder  = abs(r_wrist_y - r_shoulder_y) < torso_height * 0.4
     wrist_above_shoulder = r_wrist_y < r_shoulder_y
     elbow_above_shoulder = r_elbow_y < r_shoulder_y
 
@@ -214,14 +228,11 @@ def analyze_video(video_path: str) -> dict:
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     frames_processed = 0
-
-    phase_sequence = []
-    last_phase = "idle"
-
-    dip_frame = None
-    release_frame = None
-
-    ball_trajectory = []
+    phase_sequence   = []
+    last_phase       = "idle"
+    dip_frame        = None
+    release_frame    = None
+    ball_trajectory  = []
     ball_detected_count = 0
 
     with mp_pose.Pose(
@@ -237,7 +248,6 @@ def analyze_video(video_path: str) -> dict:
                 break
 
             frames_processed += 1
-
             h, w = frame.shape[:2]
 
             ball_pos = detect_ball_center(frame)
@@ -245,11 +255,11 @@ def analyze_video(video_path: str) -> dict:
                 ball_trajectory.append(ball_pos)
                 ball_detected_count += 1
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            rgb     = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = pose.process(rgb)
 
             if results.pose_landmarks:
-                lm = results.pose_landmarks.landmark
+                lm    = results.pose_landmarks.landmark
                 phase = classify_shot_phase(lm, h, w)
 
                 if phase != last_phase:
@@ -258,29 +268,27 @@ def analyze_video(video_path: str) -> dict:
 
                     if phase == "dip" and dip_frame is None:
                         dip_frame = frames_processed
-
                     if phase == "release" and dip_frame is not None and release_frame is None:
                         release_frame = frames_processed
 
     cap.release()
+    app.logger.info("Processed %d frames at %.1f fps", frames_processed, fps)
 
     release_speed_sec = None
     if dip_frame is not None and release_frame is not None and fps > 0:
         release_speed_sec = round((release_frame - dip_frame) / fps, 3)
 
     rim_entry_angle_deg = estimate_rim_entry_angle(ball_trajectory)
-
-    ball_detected = ball_detected_count > 0
-    shot_detected = ("dip" in phase_sequence or "load" in phase_sequence or "release" in phase_sequence)
-
-    feedback = generate_feedback(release_speed_sec, rim_entry_angle_deg, phase_sequence, ball_detected)
+    ball_detected       = ball_detected_count > 0
+    shot_detected       = any(p in phase_sequence for p in ("dip", "load", "release"))
+    feedback            = generate_feedback(release_speed_sec, rim_entry_angle_deg, phase_sequence, ball_detected)
 
     return {
-        "shot_detected": shot_detected,
-        "frames_processed": frames_processed,
-        "release_speed_sec": release_speed_sec,
+        "shot_detected":      shot_detected,
+        "frames_processed":   frames_processed,
+        "release_speed_sec":  release_speed_sec,
         "rim_entry_angle_deg": rim_entry_angle_deg,
-        "feedback": feedback,
+        "feedback":           feedback,
     }
 
 
@@ -311,12 +319,12 @@ def analyze():
     try:
         file.save(tmp.name)
         tmp.close()
-
+        app.logger.info("Analyzing uploaded file: %s", tmp.name)
         result = analyze_video(tmp.name)
         return jsonify(result), 200
 
     except Exception as exc:
-        traceback.print_exc()
+        app.logger.error("Analysis failed: %s", exc, exc_info=True)
         return jsonify({"error": str(exc)}), 500
 
     finally:
@@ -326,6 +334,11 @@ def analyze():
             pass
 
 
+# ---------------------------------------------------------------------------
+# Entry point — dev only (gunicorn imports app directly)
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    app.logger.info("Starting dev server on port %d", port)
     app.run(host="0.0.0.0", port=port, debug=False)
