@@ -623,6 +623,32 @@ def analyze_film_status(job_id: str):
     return jsonify(response), 200
 
 
+@app.route("/generate-email", methods=["POST"])
+def generate_email():
+    data = request.get_json()
+    
+    player_name = data.get("player_name", "")
+    grad_year = data.get("grad_year", "")
+    position = data.get("position", "")
+    gpa = data.get("gpa", "")
+    height = data.get("height", "")
+    release_speed = data.get("release_speed", "")
+    rim_angle = data.get("rim_entry_angle", "")
+    college_name = data.get("college_name", "")
+    coach_name = data.get("coach_name", "")
+    player_story = data.get("player_story", "")
+
+    prompt = f"""Write a professional basketball recruitment email from a player to a college coach.
+
+Player: {player_name}, {position}, Class of {grad_year}, {height}, GPA {gpa}
+Verified AI Stats: Release speed {release_speed}s, Rim entry angle {rim_angle} degrees
+Target: Coach {coach_name} at {college_name}
+Player story: {player_story}
+
+Write a personalized 250-word email highlighting system fit, verified stats, and the player's story. Be specific about why this player fits this program. Sign off with the player's name."""
+
+    import urllib.request
+    import json as json_lib
 # ---------------------------------------------------------------------------
 # Entry point — dev only (gunicorn imports app directly)
 # ---------------------------------------------------------------------------
