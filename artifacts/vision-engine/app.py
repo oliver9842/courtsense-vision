@@ -649,6 +649,31 @@ Write a personalized 250-word email highlighting system fit, verified stats, and
 
     import urllib.request
     import json as json_lib
+    import urllib.request
+    import json as json_lib
+
+    payload = json_lib.dumps({
+        "model": "llama3-70b-8192",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1024
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://api.groq.com/openai/v1/chat/completions",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {os.environ.get('GROQ_API_KEY', '')}",
+            "Content-Type": "application/json"
+        }
+    )
+
+    try:
+        with urllib.request.urlopen(req) as response:
+            result = json_lib.loads(response.read())
+            email_text = result["choices"][0]["message"]["content"]
+            return jsonify({"email_text": email_text})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 # ---------------------------------------------------------------------------
 # Entry point — dev only (gunicorn imports app directly)
 # ---------------------------------------------------------------------------
