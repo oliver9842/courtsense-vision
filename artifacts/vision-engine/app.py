@@ -39,6 +39,10 @@ mp_pose = mp.solutions.pose
 MAX_UPLOAD_GB = 4
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_GB * 1024 * 1024 * 1024
 
+# Per-endpoint upload size limits
+MAX_SINGLE_SHOT_MB = 50          # /analyze  — short clip, must fit in memory
+MAX_FILM_MB        = 4 * 1024    # /analyze-film — full game film, async processing
+
 ALLOWED_EXTENSIONS = {"mp4", "avi", "mov", "mkv", "webm"}
 
 POSE_SAMPLE_INTERVAL  = 3    # run pose every Nth frame
@@ -457,12 +461,27 @@ def analyze():
     if not allowed_file(file.filename):
         return jsonify({"error": f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"}), 400
 
+    # Early rejection via Content-Length header (avoids writing to disk)
+    content_length = request.content_length
+    limit_bytes = MAX_SINGLE_SHOT_MB * 1024 * 1024
+    if content_length and content_length > limit_bytes:
+        return jsonify({
+            "error": f"File too large for /analyze. Max {MAX_SINGLE_SHOT_MB} MB. "
+                     f"For full game film (up to {MAX_FILM_MB // 1024} GB) use /analyze-film."
+        }), 413
+
     suffix = "." + file.filename.rsplit(".", 1)[-1].lower()
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     try:
         file.save(tmp.name)
         tmp.close()
-        app.logger.info("Analyzing uploaded clip: %s", tmp.name)
+        actual_mb = os.path.getsize(tmp.name) / (1024 * 1024)
+        if actual_mb > MAX_SINGLE_SHOT_MB:
+            return jsonify({
+                "error": f"File too large for /analyze ({actual_mb:.1f} MB; max {MAX_SINGLE_SHOT_MB} MB). "
+                         f"For full game film (up to {MAX_FILM_MB // 1024} GB) use /analyze-film."
+            }), 413
+        app.logger.info("Analyzing uploaded clip: %.1f MB", actual_mb)
         return jsonify(analyze_single_shot(tmp.name)), 200
     except Exception as exc:
         app.logger.error("Analysis failed: %s", exc, exc_info=True)
@@ -498,6 +517,14 @@ def analyze_film_submit():
     if not allowed_file(file.filename):
         return jsonify({"error": f"Unsupported file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"}), 400
 
+    # Early rejection via Content-Length header (avoids writing to disk)
+    content_length = request.content_length
+    film_limit_bytes = MAX_FILM_MB * 1024 * 1024
+    if content_length and content_length > film_limit_bytes:
+        return jsonify({
+            "error": f"File too large. Max {MAX_FILM_MB // 1024} GB for /analyze-film."
+        }), 413
+
     suffix  = "." + file.filename.rsplit(".", 1)[-1].lower()
     tmp     = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     job_id  = str(uuid.uuid4())
@@ -507,6 +534,10 @@ def analyze_film_submit():
         file.save(tmp.name)
         tmp.close()
         size_mb = os.path.getsize(tmp.name) / (1024 * 1024)
+        if size_mb > MAX_FILM_MB:
+            return jsonify({
+                "error": f"File too large ({size_mb:.1f} MB). Max {MAX_FILM_MB // 1024} GB for /analyze-film."
+            }), 413
         app.logger.info("[job:%s] Saved %.1f MB — queuing analysis", job_id, size_mb)
 
         _write_job(job_id, {"status": "queued", "created_at": time.time()})
