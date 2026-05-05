@@ -12,7 +12,6 @@ import cv2
 import numpy as np
 import mediapipe as mp
 from flask import Flask, request, jsonify
-from flask_cors import CORS
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -21,7 +20,6 @@ from flask_cors import CORS
 gunicorn_logger = logging.getLogger("gunicorn.error")
 
 app = Flask(__name__)
-CORS(app)
 
 if gunicorn_logger.handlers:
     app.logger.handlers = gunicorn_logger.handlers
@@ -201,6 +199,7 @@ def analyze_single_shot(video_path: str) -> dict:
         raise ValueError("Could not open video file.")
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    frame_idx = 0
     frames_processed = 0
     phase_seq = []
     last_phase = "idle"
@@ -209,14 +208,17 @@ def analyze_single_shot(video_path: str) -> dict:
     ball_count = 0
 
     with mp_pose.Pose(
-        static_image_mode=False, model_complexity=1, enable_segmentation=False,
+        static_image_mode=False, model_complexity=0, enable_segmentation=False,
         min_detection_confidence=0.5, min_tracking_confidence=0.5,
     ) as pose:
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
+            frame_idx += 1
             frames_processed += 1
+            if frame_idx % 3 != 0:
+                continue
             h, w = frame.shape[:2]
             bp = detect_ball_center(frame)
             if bp:
