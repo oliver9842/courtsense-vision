@@ -677,7 +677,38 @@ Write a personalized 250-word email highlighting system fit, verified stats, and
 # ---------------------------------------------------------------------------
 # Entry point — dev only (gunicorn imports app directly)
 # ---------------------------------------------------------------------------
+@app.route("/analyze-url", methods=["POST"])
+def analyze_url():
+    data = request.get_json()
+    video_url = data.get("video_url", "")
+    
+    if not video_url:
+        return jsonify({"error": "No URL provided"}), 400
 
+    import tempfile
+    import subprocess
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        subprocess.run([
+            "yt-dlp",
+            "-f", "worst[ext=mp4]/worst",
+            "--max-filesize", "500m",
+            "-o", tmp_path,
+            video_url
+        ], timeout=120, check=True)
+
+        result = analyze_video(tmp_path)
+        return jsonify(result)
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Download timed out"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.logger.info("Starting dev server on port %d", port)
