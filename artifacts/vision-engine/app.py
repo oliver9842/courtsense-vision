@@ -541,7 +541,7 @@ def analyze_film_submit():
         app.logger.info("[job:%s] Saved %.1f MB — queuing analysis", job_id, size_mb)
 
         # Process synchronously and return results directly
-        analyze_film_worker(job_id, tmp.name)
+        _analyze_film_worker(job_id, tmp.name)
         job_data = _read_job(job_id)
         if job_data and job_data.get("status") == "done":
             result = job_data.get("result", {})
