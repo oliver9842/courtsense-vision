@@ -540,20 +540,14 @@ def analyze_film_submit():
             }), 413
         app.logger.info("[job:%s] Saved %.1f MB — queuing analysis", job_id, size_mb)
 
-        _write_job(job_id, {"status": "queued", "created_at": time.time()})
-
-        t = threading.Thread(
-            target=_analyze_film_worker,
-            args=(job_id, tmp.name),
-            daemon=True,
-        )
-        t.start()
-
-        return jsonify({
-            "job_id":   job_id,
-            "status":   "queued",
-            "poll_url": f"/analyze-film/{job_id}",
-        }), 202
+        # Process synchronously and return results directly
+        analyze_film_worker(job_id, tmp.name)
+        job_data = _read_job(job_id)
+        if job_data and job_data.get("status") == "done":
+            result = job_data.get("result", {})
+            return jsonify({"status": "done", **result}), 200
+        else:
+            return jsonify({"error": "Analysis failed"}), 500
 
     except Exception as exc:
         app.logger.error("[job:%s] Submit failed: %s", job_id, exc, exc_info=True)
