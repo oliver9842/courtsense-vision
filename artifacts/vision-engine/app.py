@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 import mediapipe as mp
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -20,7 +21,7 @@ from flask import Flask, request, jsonify
 gunicorn_logger = logging.getLogger("gunicorn.error")
 
 app = Flask(__name__)
-
+CORS(app, origins="*")
 if gunicorn_logger.handlers:
     app.logger.handlers = gunicorn_logger.handlers
     app.logger.setLevel(gunicorn_logger.level)
