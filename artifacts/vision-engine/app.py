@@ -704,6 +704,114 @@ def analyze_url():
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
+            @app.route("/analyze-tendency", methods=["POST"])
+def analyze_tendency():
+    if "video" not in request.files:
+        return jsonify({"error": "No video file provided"}), 400
+    
+    file = request.files["video"]
+    suffix = "." + file.filename.rsplit(".", 1)[-1].lower()
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    
+    try:
+        file.save(tmp.name)
+        tmp.close()
+        
+        cap = cv2.VideoCapture(tmp.name)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        drives_left = 0
+        drives_right = 0
+        shots_off_dribble = 0
+        shots_catch_and_shoot = 0
+        left_side_court = 0
+        right_side_court = 0
+        total_possessions = 0
+        quick_releases = 0
+        frame_idx = 0
+        prev_hip_x = None
+        possession_frames = 0
+        
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame_idx += 1
+            if frame_idx % 3 != 0:
+                continue
+            
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            result = mp_pose.process(rgb)
+            
+            if result.pose_landmarks:
+                lm = result.pose_landmarks.landmark
+                left_hip = lm[mp.solutions.pose.PoseLandmark.LEFT_HIP]
+                right_hip = lm[mp.solutions.pose.PoseLandmark.RIGHT_HIP]
+                left_shoulder = lm[mp.solutions.pose.PoseLandmark.LEFT_SHOULDER]
+                right_shoulder = lm[mp.solutions.pose.PoseLandmark.RIGHT_SHOULDER]
+                
+                hip_x = (left_hip.x + right_hip.x) / 2
+                shoulder_x = (left_shoulder.x + right_shoulder.x) / 2
+                
+                # Court position
+                if hip_x < 0.5:
+                    left_side_court += 1
+                else:
+                    right_side_court += 1
+                
+                # Drive direction based on body rotation
+                if prev_hip_x is not None:
+                    movement = hip_x - prev_hip_x
+                    if abs(movement) > 0.01:
+                        total_possessions += 1
+                        if movement < 0:
+                            drives_left += 1
+                        else:
+                            drives_right += 1
+                
+                # Quick release detection
+                possession_frames += 1
+                if possession_frames < 10:
+                    quick_releases += 1
+                
+                prev_hip_x = hip_x
+        
+        cap.release()
+        
+        total_drives = drives_left + drives_right
+        total_court = left_side_court + right_side_court
+        
+        tendencies = {
+            "drives_left_pct": round((drives_left / total_drives * 100) if total_drives > 0 else 0, 1),
+            "drives_right_pct": round((drives_right / total_drives * 100) if total_drives > 0 else 0, 1),
+            "left_side_court_pct": round((left_side_court / total_court * 100) if total_court > 0 else 0, 1),
+            "right_side_court_pct": round((right_side_court / total_court * 100) if total_court > 0 else 0, 1),
+            "frames_analyzed": frame_idx,
+            "total_movements": total_drives,
+            "summary": []
+        }
+        
+        # Generate tendency summary
+        if tendencies["drives_left_pct"] > 60:
+            tendencies["summary"].append(f"Drives LEFT {tendencies['drives_left_pct']}% of the time — defenders should overplay left")
+        elif tendencies["drives_right_pct"] > 60:
+            tendencies["summary"].append(f"Drives RIGHT {tendencies['drives_right_pct']}% of the time — defenders should overplay right")
+        else:
+            tendencies["summary"].append("Balanced driver — goes both directions equally")
+            
+        if tendencies["left_side_court_pct"] > 65:
+            tendencies["summary"].append(f"Operates on LEFT side of court {tendencies['left_side_court_pct']}% of the time")
+        elif tendencies["right_side_court_pct"] > 65:
+            tendencies["summary"].append(f"Operates on RIGHT side of court {tendencies['right_side_court_pct']}% of the time")
+        
+        return jsonify({"status": "done", "tendencies": tendencies}), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if os.path.exists(tmp.name):
+            os.unlink(tmp.name)
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.logger.info("Starting dev server on port %d", port)
